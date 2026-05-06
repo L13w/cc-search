@@ -15,6 +15,20 @@ const Drawer = ({ hit, terms, onClose }) => {
   const [messages, setMessages] = useStateD([]);
   const [loading, setLoading] = useStateD(false);
   const [error, setError] = useStateD(null);
+  // Persist across drawer-opens so the user's preference sticks during
+  // a session. Default: hide tool calls / results / images so the
+  // drawer reads as a clean prose conversation.
+  const [showTools, setShowTools] = useStateD(() => {
+    try { return window.localStorage.getItem('cs.drawer.showTools') === '1'; }
+    catch { return false; }
+  });
+  const toggleShowTools = () => {
+    setShowTools((v) => {
+      const next = !v;
+      try { window.localStorage.setItem('cs.drawer.showTools', next ? '1' : '0'); } catch {}
+      return next;
+    });
+  };
   const bodyRef = useRefD(null);
   const matchedRef = useRefD(null);
 
@@ -55,7 +69,7 @@ const Drawer = ({ hit, terms, onClose }) => {
       bodyRef.current.scrollTop = Math.max(0, target);
     });
     return () => cancelAnimationFrame(id);
-  }, [messages, hit && hit.id]);
+  }, [messages, hit && hit.id, showTools]);
 
   const copyText = (text, setter) => {
     if (!text) return;
@@ -65,6 +79,14 @@ const Drawer = ({ hit, terms, onClose }) => {
     setter(true);
     setTimeout(() => setter(false), 1500);
   };
+
+  // Hide tool_use / tool_result / image messages by default. Always
+  // keep the matched message visible regardless of toggle, so a hit
+  // on a tool message still shows up when the user clicks it.
+  const isProseKind = (m) => m.kind === 'user_typed' || m.kind === 'assistant_prose';
+  const visibleMessages = showTools
+    ? messages
+    : messages.filter((m) => isProseKind(m) || m.id === hit.id);
 
   return (
     <div className="drawer">
@@ -77,6 +99,15 @@ const Drawer = ({ hit, terms, onClose }) => {
             {copied && <span className="copied">Copied</span>}
           </button>
           <div className="drawer-actions">
+            <button
+              className={`btn tiny ${showTools ? '' : 'ghost'}`}
+              onClick={toggleShowTools}
+              title={showTools
+                ? "Hide tool calls and results in this drawer"
+                : "Show tool calls and results in this drawer"}
+              style={{marginRight:8}}>
+              <Ic2.Term size={11} /> {showTools ? 'tools on' : 'tools off'}
+            </button>
             {sourceLabel && <span className="source-tag" style={{marginRight:8}}>{sourceLabel}</span>}
             <button className="icon-btn" onClick={onClose} title="Close (Esc)">
               <Ic2.X size={14} />
@@ -97,7 +128,11 @@ const Drawer = ({ hit, terms, onClose }) => {
           </>}
           {messages.length > 0 && <>
             <span className="sep">·</span>
-            <span>{messages.length.toLocaleString()} messages</span>
+            <span>
+              {showTools
+                ? `${messages.length.toLocaleString()} messages`
+                : `${visibleMessages.length.toLocaleString()} of ${messages.length.toLocaleString()} messages`}
+            </span>
           </>}
         </div>
       </div>
@@ -126,7 +161,7 @@ const Drawer = ({ hit, terms, onClose }) => {
             </div>
           </div>
         )}
-        {messages.map((m) => {
+        {visibleMessages.map((m) => {
           const isMatched = m.id === hit.id;
           const isAuxKind = m.kind && m.kind !== 'user_typed' && m.kind !== 'assistant_prose';
           return (
