@@ -1,0 +1,82 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>claude-search · Settings</title>
+<link rel="stylesheet" href="styles.css" />
+<link rel="stylesheet" href="settings.css" />
+<style>
+  html, body, #root { width: 100%; height: 100%; }
+  body { background: oklch(0.12 0.005 260); margin: 0; }
+  #root { display: flex; padding: 24px; gap: 0; }
+  .placeholder-panel {
+    flex: 1;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    padding: 48px;
+    color: var(--fg-3);
+    text-align: center;
+  }
+  .placeholder-panel h2 { margin: 0 0 6px; font-size: 18px; color: var(--fg-2); }
+  .placeholder-panel p { margin: 0; font-size: 12.5px; color: var(--fg-4); max-width: 440px; }
+</style>
+<script src="https://unpkg.com/react@18.3.1/umd/react.development.js" crossorigin="anonymous"></script>
+<script src="https://unpkg.com/react-dom@18.3.1/umd/react-dom.development.js" crossorigin="anonymous"></script>
+<script src="https://unpkg.com/@babel/standalone@7.29.0/babel.min.js" crossorigin="anonymous"></script>
+<script src="api.js"></script>
+<script src="remotes-store.js"></script>
+<script type="text/babel" src="icons.jsx"></script>
+<script type="text/babel" src="settings-shell.jsx"></script>
+<script type="text/babel" src="remote-panel.jsx"></script>
+<script type="text/babel" src="service-panel.jsx"></script>
+</head>
+<body>
+<div id="root"></div>
+<script type="text/babel" data-presets="react">
+const { useState } = React;
+
+const Placeholder = ({ active, onNav, title, body }) => (
+  <window.Settings.SettingsShell active={active} onNav={onNav}>
+    <div className="placeholder-panel">
+      <h2>{title}</h2>
+      <p>{body}</p>
+    </div>
+  </window.Settings.SettingsShell>
+);
+
+const App = () => {
+  const [nav, setNav] = useState('remote');
+  const onNav = (id) => setNav(id);
+
+  if (nav === 'remote') {
+    return <window.RemoteServersPanel onNav={onNav} />;
+  }
+  if (nav === 'service') {
+    return <window.ServicePanel onNav={onNav} />;
+  }
+
+  const placeholders = {
+    index: {
+      title: 'Index',
+      body: 'Index management lives here — full reindex, incremental ingest progress, and per-project breakdowns. Phase 2 will wire this up.',
+    },
+    appear: {
+      title: 'Appearance',
+      body: 'Theme, density, and font preferences will live here.',
+    },
+    keys: {
+      title: 'Keybindings',
+      body: 'Customize keyboard shortcuts. Defaults follow the Linear / Raycast school.',
+    },
+  };
+  const p = placeholders[nav] || placeholders.index;
+  return <Placeholder active={nav} onNav={onNav} title={p.title} body={p.body} />;
+};
+
+ReactDOM.createRoot(document.getElementById('root')).render(<App />);
+</script>
+</body>
+</html>

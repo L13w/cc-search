@@ -1,0 +1,427 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>claude-search</title>
+<link rel="stylesheet" href="styles.css" />
+<style>
+  html, body, #root { width: 100%; height: 100%; }
+  body { background: var(--bg-1); margin: 0; }
+  #root { display: flex; }
+  .frame {
+    flex: 1;
+    display: flex;
+    flex-direction: column;
+    background: var(--bg-1);
+    overflow: hidden;
+    position: relative;
+    min-height: 0;
+  }
+  .fanout-banner {
+    margin: 8px 16px 0;
+    padding: 6px 10px;
+    background: oklch(0.78 0.13 75 / 0.10);
+    border: 1px solid oklch(0.78 0.13 75 / 0.30);
+    border-radius: var(--r);
+    font-size: 11.5px;
+    color: var(--warning);
+    display: flex;
+    align-items: center;
+    gap: 8px;
+  }
+  .source-tag {
+    margin-left: 8px;
+    padding: 0 5px;
+    border-radius: 2px;
+    border: 1px solid var(--border-1);
+    background: var(--bg-2);
+    font-family: var(--font-mono);
+    font-size: 10px;
+    color: var(--fg-3);
+    text-transform: lowercase;
+  }
+  .source-tag.local { color: var(--fg-2); }
+</style>
+<script src="https://unpkg.com/react@18.3.1/umd/react.development.js" crossorigin="anonymous"></script>
+<script src="https://unpkg.com/react-dom@18.3.1/umd/react-dom.development.js" crossorigin="anonymous"></script>
+<script src="https://unpkg.com/@babel/standalone@7.29.0/babel.min.js" crossorigin="anonymous"></script>
+<script src="api.js"></script>
+<script src="remotes-store.js"></script>
+<script type="text/babel" src="icons.jsx"></script>
+<script type="text/babel" src="data.jsx"></script>
+<script type="text/babel" src="app.jsx"></script>
+<script type="text/babel" src="drawer.jsx"></script>
+</head>
+<body>
+<div id="root"></div>
+<script type="text/babel" data-presets="react">
+(() => {
+const { useState, useEffect, useMemo, useRef } = React;
+
+const PER_SERVER_TIMEOUT_MS = 1500;
+
+// Build the list of servers to fan out to: local + every enabled remote.
+function buildServers() {
+  const servers = [{
+    api: window.csAPI.local,
+    label: 'local',
+    isLocal: true,
+  }];
+  const remotes = (window.csRemotes && window.csRemotes.list()) || [];
+  for (const r of remotes) {
+    if (!r.enabled) continue;
+    servers.push({
+      api: window.csAPI.makeAPI({ baseUrl: r.url, token: r.token, source: r.label }),
+      label: r.label,
+      isLocal: false,
+      url: r.url,
+    });
+  }
+  return servers;
+}
+
+// Promise that rejects after `ms`. Used to time out a single per-server call.
+function withTimeout(promise, ms, controller) {
+  return new Promise((resolve, reject) => {
+    const id = setTimeout(() => {
+      controller && controller.abort();
+      reject(Object.assign(new Error('timeout'), { code: 'timeout' }));
+    }, ms);
+    promise.then(
+      (v) => { clearTimeout(id); resolve(v); },
+      (e) => { clearTimeout(id); reject(e); },
+    );
+  });
+}
+
+// Fan out an async call across servers. Returns { hits, errors, took }.
+async function fanout(servers, callFn) {
+  const t0 = performance.now();
+  const settled = await Promise.allSettled(servers.map((srv) => {
+    const ctrl = new AbortController();
+    return withTimeout(callFn(srv, ctrl.signal), PER_SERVER_TIMEOUT_MS, ctrl)
+      .then((hits) => ({ srv, hits }))
+      .catch((err) => Promise.reject({ srv, err }));
+  }));
+  const hits = [];
+  const errors = [];
+  for (const r of settled) {
+    if (r.status === 'fulfilled') hits.push(...r.value.hits);
+    else errors.push(r.reason);
+  }
+  return { hits, errors, took: Math.round(performance.now() - t0) };
+}
+
+const App = () => {
+  const { SearchBar, ResultsList, NoResults, Footer } = window.SearchApp;
+  const { Drawer, HelpOverlay } = window.AppParts;
+
+  const [query, setQuery] = useState('');
+  const [filters, setFilters] = useState({ kind: 'prose', time: 'all', projects: [] });
+  const [selectedId, setSelectedId] = useState(null);
+  const [helpOpen, setHelpOpen] = useState(false);
+
+  // API state
+  const [apiLive, setApiLive] = useState(null);
+  const [serverStatus, setServerStatus] = useState(null);
+  const [recentHits, setRecentHits] = useState([]);
+  const [searchHits, setSearchHits] = useState([]);
+  const [searchTook, setSearchTook] = useState(0);
+  const [searchError, setSearchError] = useState(null);
+  const [searching, setSearching] = useState(false);
+  const [fanoutErrors, setFanoutErrors] = useState([]);
+  const [remoteSnapshot, setRemoteSnapshot] = useState(0); // bump when remotes change
+
+  // Distinct project paths across local + remotes, with merged counts.
+  const [projectList, setProjectList] = useState([]);  // [path, …] sorted desc
+  const [projectCounts, setProjectCounts] = useState({}); // path → count
+
+  // Per-server status: { label: { messages, reachable } } across local + remotes.
+  // Drives the status pill so the count reflects every paired index, not
+  // just the local one.
+  const [serversStats, setServersStats] = useState({});
+
+  // Watch the remotes store so the fan-out re-runs when paired/unpaired.
+  useEffect(() => {
+    const bump = () => setRemoteSnapshot((n) => n + 1);
+    window.addEventListener('cs-remotes-changed', bump);
+    return () => window.removeEventListener('cs-remotes-changed', bump);
+  }, []);
+
+  const trimmed = query.trim();
+  const terms = trimmed.split(/\s+/).filter(Boolean);
+
+  // ── Probe local on mount ──────────────────────────────────────────
+  useEffect(() => {
+    let cancelled = false;
+    window.csAPI.local.probe().then((res) => {
+      if (cancelled) return;
+      setApiLive(res.live);
+      if (res.live) setServerStatus(res.status);
+    });
+    return () => { cancelled = true; };
+  }, []);
+
+  // ── Per-server status fan-out ────────────────────────────────────
+  // Polls /v1/status on local + every paired remote so the status pill
+  // can show a combined message count and a per-server reachable count.
+  useEffect(() => {
+    if (!apiLive) return;
+    let cancelled = false;
+    const refresh = () => {
+      const servers = buildServers();
+      Promise.allSettled(servers.map((s) =>
+        s.api.getStatus()
+          .then((st) => ({ label: s.label, messages: st.messages, reachable: true }))
+          .catch(() => ({ label: s.label, messages: 0, reachable: false }))
+      )).then((results) => {
+        if (cancelled) return;
+        const next = {};
+        for (const r of results) {
+          if (r.status === 'fulfilled') {
+            next[r.value.label] = { messages: r.value.messages, reachable: r.value.reachable };
+          }
+        }
+        setServersStats(next);
+      });
+    };
+    refresh();
+    const id = setInterval(refresh, 30000);
+    return () => { cancelled = true; clearInterval(id); };
+  }, [apiLive, remoteSnapshot]);
+
+  // ── Projects fan-out ──────────────────────────────────────────────
+  // Pulls /v1/projects from local + every enabled remote, merges by
+  // project_path, sums counts. Drives the project-filter dropdown.
+  useEffect(() => {
+    if (!apiLive) return;
+    let cancelled = false;
+    const servers = buildServers();
+    Promise.allSettled(servers.map((s) => s.api.getProjects())).then((results) => {
+      if (cancelled) return;
+      const counts = {};
+      for (const r of results) {
+        if (r.status !== 'fulfilled') continue;
+        for (const row of r.value) {
+          counts[row.project_path] = (counts[row.project_path] || 0) + row.messages;
+        }
+      }
+      // Alphabetical by trailing path component (case-insensitive),
+      // then by full path so same-named cwds on different machines
+      // sit adjacent.
+      const shortOf = (p) => {
+        const parts = String(p).split(/[\/\\]/).filter(Boolean);
+        return (parts.length ? parts[parts.length - 1] : String(p)).toLowerCase();
+      };
+      const sorted = Object.keys(counts).sort(
+        (a, b) => shortOf(a).localeCompare(shortOf(b)) || a.localeCompare(b)
+      );
+      setProjectCounts(counts);
+      setProjectList(sorted);
+    });
+    return () => { cancelled = true; };
+  }, [apiLive, remoteSnapshot]);
+
+  // ── Recent fan-out ────────────────────────────────────────────────
+  useEffect(() => {
+    if (!apiLive || trimmed) return;
+    let cancelled = false;
+    const servers = buildServers();
+    fanout(servers, (srv) => srv.api.getRecent(50)).then(({ hits, errors }) => {
+      if (cancelled) return;
+      // Recent is ordered by timestamp DESC; concat from all servers and re-sort.
+      hits.sort((a, b) => (b.ts || '').localeCompare(a.ts || ''));
+      setRecentHits(hits.slice(0, 80));
+      setFanoutErrors(errors);
+    });
+    return () => { cancelled = true; };
+  }, [apiLive, trimmed, remoteSnapshot, filters.projects.length]);
+
+  // ── Debounced search fan-out ──────────────────────────────────────
+  const searchSeq = useRef(0);
+  useEffect(() => {
+    if (!apiLive) return;
+    if (!trimmed) { setSearchHits([]); setSearchError(null); setFanoutErrors([]); return; }
+    const seq = ++searchSeq.current;
+    setSearching(true);
+    const t = setTimeout(async () => {
+      const servers = buildServers();
+      const kinds = filters.kind === 'all' ? [] : null;
+      const projectPaths = filters.projects.length ? filters.projects : null;
+      const { hits, errors, took } = await fanout(servers, (srv, signal) =>
+        srv.api.search(trimmed, { limit: 30, kinds, projectPaths, signal })
+      );
+      if (seq !== searchSeq.current) return;
+      // bm25 in our implementation is more-negative-is-better; sort ascending.
+      hits.sort((a, b) => (a.score ?? 0) - (b.score ?? 0));
+      // If FTS5 syntax was rejected by every server (rare but possible),
+      // hoist a single error message.
+      const allFTSErr = errors.length === servers.length &&
+        errors.every((e) => e.err && (e.err.status === 400));
+      setSearchHits(hits.slice(0, 50));
+      setSearchTook(took);
+      setSearchError(allFTSErr ? errors[0].err.body || 'invalid query' : null);
+      setFanoutErrors(errors);
+      if (seq === searchSeq.current) setSearching(false);
+    }, 200);
+    return () => clearTimeout(t);
+  }, [trimmed, filters.kind, apiLive, remoteSnapshot]);
+
+  // ── Mock fallback when local API unreachable ──────────────────────
+  // Live mode stores full cwds in filters.projects; mock data only has
+  // short proj names. Match against either.
+  const inProjects = (h) =>
+    filters.projects.length === 0
+    || filters.projects.includes(h.cwd)
+    || filters.projects.includes(h.proj);
+  const inKind = (h) =>
+    filters.kind === 'all' ? true : (h.role !== 'tool');
+
+  const mockFiltered = useMemo(() => {
+    if (apiLive || !trimmed) return [];
+    const q = trimmed.toLowerCase();
+    return window.HITS.filter(h =>
+      inProjects(h) && inKind(h) &&
+      (h.snippet.toLowerCase().includes(q) || h.proj.toLowerCase().includes(q))
+    );
+  }, [trimmed, filters, apiLive]);
+
+  const mockRecent = useMemo(
+    () => apiLive ? [] : window.HITS.filter(h => inProjects(h) && inKind(h)).slice(0, 24),
+    [filters, apiLive]
+  );
+
+  // ── Visible set ───────────────────────────────────────────────────
+  const showRecent = !trimmed;
+  let visible, errorBanner = null;
+
+  if (apiLive === null) {
+    visible = [];
+  } else if (apiLive) {
+    visible = showRecent
+      ? recentHits.filter(inProjects)
+      : searchHits.filter(inProjects);
+    errorBanner = searchError;
+  } else {
+    visible = showRecent ? mockRecent : mockFiltered;
+  }
+
+  const showNoResults = !showRecent && !searching && visible.length === 0 && !errorBanner;
+  const selected = visible.find(h => h.id === selectedId) || null;
+
+  // ── Status pill ───────────────────────────────────────────────────
+  const remoteCount = (window.csRemotes && window.csRemotes.list().filter(r => r.enabled).length) || 0;
+  const totalServers = 1 + remoteCount;
+  // Sum messages across reachable servers; count reachable servers.
+  const aggregateMessages = Object.values(serversStats)
+    .filter((s) => s.reachable).reduce((sum, s) => sum + (s.messages || 0), 0);
+  const reachableServers = Object.values(serversStats).filter((s) => s.reachable).length;
+  let statusText;
+  if (apiLive === null) {
+    statusText = 'connecting…';
+  } else if (apiLive) {
+    // Prefer the aggregate from the fan-out; fall back to the local
+    // probe's count if the fan-out hasn't completed yet.
+    const indexedCount = aggregateMessages > 0
+      ? aggregateMessages
+      : (serverStatus ? serverStatus.messages : 0);
+    const reachableNow = reachableServers > 0 ? reachableServers : (totalServers - fanoutErrors.length);
+    if (showRecent) {
+      statusText = totalServers > 1
+        ? `${indexedCount.toLocaleString()} indexed · ${reachableNow}/${totalServers} servers`
+        : `${indexedCount.toLocaleString()} indexed · live`;
+    } else if (searching) {
+      statusText = '…';
+    } else if (errorBanner) {
+      statusText = '— · query invalid';
+    } else {
+      statusText = totalServers > 1
+        ? `${visible.length} hits · ${searchTook}ms · ${reachableNow}/${totalServers} servers`
+        : `${visible.length} hits · ${searchTook}ms`;
+    }
+  } else {
+    statusText = showRecent
+      ? `${window.HITS.length.toLocaleString()} indexed · mock data`
+      : `${visible.length} hits · mock data`;
+  }
+
+  // ── Handlers / shortcuts ──────────────────────────────────────────
+  const onSelect = (id) => setSelectedId(id);
+  const onCloseDrawer = () => setSelectedId(null);
+  const onSettings = () => { window.location.href = 'settings.html'; };
+  const onHelp = () => setHelpOpen(true);
+
+  useEffect(() => {
+    const onKey = (e) => {
+      if (e.key === '?' && !e.metaKey && !e.ctrlKey) {
+        const tag = (document.activeElement && document.activeElement.tagName) || '';
+        if (tag !== 'INPUT' && tag !== 'TEXTAREA') { e.preventDefault(); setHelpOpen(true); }
+      } else if (e.key === 'Escape') {
+        if (helpOpen) setHelpOpen(false);
+        else if (selectedId) setSelectedId(null);
+      } else if ((e.metaKey || e.ctrlKey) && e.key === ',') {
+        e.preventDefault();
+        onSettings();
+      }
+    };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [helpOpen, selectedId]);
+
+  // ── Fan-out error banner ──────────────────────────────────────────
+  const failedLabels = fanoutErrors.map((e) => e.srv && e.srv.label).filter(Boolean);
+
+  return (
+    <div className="frame">
+      <SearchBar
+        query={query} setQuery={setQuery}
+        status={statusText}
+        filters={filters} setFilters={setFilters}
+        projects={apiLive ? projectList : undefined}
+        projectCounts={apiLive ? projectCounts : undefined}
+        onSettings={onSettings} onHelp={onHelp}
+        error={errorBanner}
+      />
+      {apiLive && failedLabels.length > 0 && (
+        <div className="fanout-banner">
+          <span style={{fontFamily:'var(--font-mono)'}}>!</span>
+          {failedLabels.length === 1
+            ? <>1 server didn't respond: <strong>{failedLabels[0]}</strong></>
+            : <>{failedLabels.length} servers didn't respond: <strong>{failedLabels.join(', ')}</strong></>
+          }
+          <span style={{flex:1}} />
+          <a href="settings.html" style={{color:'var(--warning)'}}>open settings →</a>
+        </div>
+      )}
+      <div className="results">
+        {showNoResults ? (
+          <NoResults query={query} />
+        ) : (
+          <ResultsList
+            hits={visible}
+            terms={apiLive ? [] : (showRecent ? [] : terms)}
+            selectedId={selected?.id}
+            onSelect={onSelect}
+            sectionLabel={showRecent
+              ? (apiLive ? `Recent · live · ${remoteCount > 0 ? `local + ${remoteCount} remote` : 'this machine'}` : 'Recent · mock data')
+              : null}
+          />
+        )}
+        {selected && <Drawer hit={selected} terms={apiLive ? [] : terms} onClose={onCloseDrawer} />}
+      </div>
+      <Footer extra={apiLive === false ? (
+        <span className="hint" style={{color:'var(--warning)'}}>
+          serve not running · showing mock data
+        </span>
+      ) : null} />
+      {helpOpen && <HelpOverlay onClose={() => setHelpOpen(false)} />}
+    </div>
+  );
+};
+
+ReactDOM.createRoot(document.getElementById('root')).render(<App />);
+})();
+</script>
+</body>
+</html>

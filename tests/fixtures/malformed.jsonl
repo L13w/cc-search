@@ -1,0 +1,5 @@
+{"type":"user","sessionId":"s","cwd":"/p","uuid":"u-good-1","timestamp":"2026-01-01T00:00:00Z","message":{"role":"user","content":"good message before the bad line"}}
+this is not json at all
+{"type":"user","sessionId":"s","cwd":"/p","uuid":"u-good-2","timestamp":"2026-01-01T00:00:02Z","message":{"role":"user","content":"good message after the bad line"}}
+{"type":"assistant","sessionId":"s","cwd":"/p","uuid":"","timestamp":"2026-01-01T00:00:03Z","message":{"role":"assistant","content":[{"type":"text","text":"missing uuid should be skipped"}]}}
+{"type":"user","sessionId":"s","cwd":"/p","uuid":"u-empty","timestamp":"2026-01-01T00:00:04Z","message":{"role":"user","content":""}}
