@@ -260,3 +260,48 @@ def test_schema_version_mismatch_triggers_rebuild(tmp_path: Path):
     with Index(db) as idx:
         assert idx.message_count() == 0
         assert idx.file_count() == 0
+
+
+def _insert_test_token(idx: Index, *, label: str = "client") -> None:
+    idx.conn.execute(
+        """
+        INSERT INTO tokens(id, token_hash, kind, label, created_at)
+        VALUES (?, ?, 'bearer', ?, '2026-05-06T00:00:00Z')
+        """,
+        (f"id-{label}", f"hash-{label}", label),
+    )
+    idx.conn.commit()
+
+
+def _count_tokens(idx: Index) -> int:
+    return int(idx.conn.execute("SELECT COUNT(*) FROM tokens").fetchone()[0])
+
+
+def test_reset_preserves_tokens(tmp_path: Path):
+    """`index --rebuild` must not log paired clients out."""
+    db = tmp_path / "index.sqlite"
+    with Index(db) as idx:
+        idx.insert_messages([_msg(message_id="m", content="alpha")])
+        _insert_test_token(idx, label="laptop")
+        assert _count_tokens(idx) == 1
+
+        idx.reset()
+
+        assert idx.message_count() == 0  # index data wiped
+        assert _count_tokens(idx) == 1   # tokens survive
+
+
+def test_schema_version_rebuild_preserves_tokens(tmp_path: Path):
+    """A schema bump that rebuilds index tables must keep tokens intact."""
+    db = tmp_path / "index.sqlite"
+    with Index(db) as idx:
+        idx.insert_messages([_msg(message_id="m", content="alpha")])
+        _insert_test_token(idx, label="laptop")
+        idx.conn.execute(
+            "INSERT OR REPLACE INTO meta(key, value) VALUES('schema_version', '0')"
+        )
+        idx.conn.commit()
+
+    with Index(db) as idx:
+        assert idx.message_count() == 0  # index rebuilt
+        assert _count_tokens(idx) == 1   # token survived the rebuild

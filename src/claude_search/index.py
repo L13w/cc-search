@@ -157,7 +157,7 @@ class Index:
                     row["value"],
                     SCHEMA_VERSION,
                 )
-                self._drop_all()
+                self._drop_index_tables()
         for stmt in SCHEMA_SQL:
             cur.execute(stmt)
         cur.execute(
@@ -166,17 +166,22 @@ class Index:
         )
         self.conn.commit()
 
-    def _drop_all(self) -> None:
+    def _drop_index_tables(self) -> None:
+        # Tokens are auth state, not index state — preserve them across
+        # `index --rebuild` and schema-version-mismatch rebuilds so paired
+        # clients don't have to re-pair every time the index churns.
         cur = self.conn.cursor()
         cur.execute("DROP TABLE IF EXISTS messages")
         cur.execute("DROP TABLE IF EXISTS ingest_state")
         cur.execute("DROP TABLE IF EXISTS seen_messages")
         cur.execute("DROP TABLE IF EXISTS meta")
-        cur.execute("DROP TABLE IF EXISTS tokens")
 
     def reset(self) -> None:
-        """Drop and recreate all tables. Used by `index --rebuild`."""
-        self._drop_all()
+        """Drop and recreate index tables. Used by `index --rebuild`.
+
+        Tokens (auth) are preserved.
+        """
+        self._drop_index_tables()
         self._ensure_schema()
 
     # --- ingest --------------------------------------------------------
