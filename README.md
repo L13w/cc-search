@@ -155,6 +155,21 @@ Under the hood:
 
 Source sessions are read-only; claude-search never modifies them.
 
+### Retention: claude-search outlives Claude Code's cleanup
+
+Claude Code's `cleanupPeriodDays` setting in `~/.claude/settings.json` defaults to **30 days** — older session JSONL files are deleted from `~/.claude/projects/` at next CLI startup. If you want a long history, raise it:
+
+```json
+{ "cleanupPeriodDays": 1000 }
+```
+
+Minimum is 1 day; there's no way to disable cleanup entirely.
+
+claude-search's index is decoupled from source files once content is ingested — full message text lives in the SQLite FTS5 table, not just a reference. So anything claude-search has already indexed stays searchable and browseable in the drawer, even if the original JSONL gets cleaned up later. The watcher doesn't currently process delete events, which means `ingest_state` accumulates orphan rows over time — purely cosmetic, no functional impact.
+
+> [!TIP]
+> If you've already lost old sessions to the default 30-day cleanup, you can't recover them — but raise `cleanupPeriodDays` now and run claude-search before the next cleanup, and you'll have a durable searchable archive of everything from this point forward.
+
 ## Architecture in one paragraph
 
 A FastAPI service on `127.0.0.1:8765` serves both the API (`/v1/*`) and the bundled web UI (`/`). A SQLite FTS5 index stores one row per message with `kind`, `role`, `project_path`, `session_id`, `timestamp`, and full content. A watchdog observer reindexes session files within ~1s of a write. Cross-machine pairing is a one-line invite URL → bearer token flow stored in the browser's `localStorage`. The search bar fan-out uses `Promise.allSettled` against local + every paired remote with a per-server timeout, then merges hits by FTS5's bm25 score.
