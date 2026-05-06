@@ -157,7 +157,7 @@ const Drawer = ({ hit, terms, onClose }) => {
               <span className="ts">{hit.ts || ''}</span>
             </div>
             <div className="msg-body">
-              <window.SearchApp.Snippet text={hit.snippet || ''} terms={terms || []} />
+              <window.SearchApp.MessageBody text={hit.snippet || ''} terms={terms || []} />
             </div>
           </div>
         )}
@@ -179,7 +179,7 @@ const Drawer = ({ hit, terms, onClose }) => {
                 )}
               </div>
               <div className="msg-body">
-                <window.SearchApp.Snippet text={m.snippet} terms={terms || []} />
+                <window.SearchApp.MessageBody text={m.snippet} terms={terms || []} />
               </div>
             </div>
           );

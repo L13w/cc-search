@@ -708,8 +708,67 @@ mark {
   font-size: 13px;
   line-height: 1.6;
 }
-.msg-body p { margin: 0 0 8px; }
-.msg-body p:last-child { margin-bottom: 0; }
+.msg-body p,
+.msg-body .md-p { margin: 0 0 8px; }
+.msg-body p:last-child,
+.msg-body .md-p:last-child { margin-bottom: 0; }
+.msg-body .md-h {
+  color: var(--fg-1);
+  font-weight: 600;
+  letter-spacing: 0.01em;
+  margin: 14px 0 6px;
+  line-height: 1.3;
+}
+.msg-body .md-h:first-child { margin-top: 0; }
+.msg-body .md-h1 { font-size: 15px; }
+.msg-body .md-h2 { font-size: 14px; color: var(--fg-2); }
+.msg-body .md-h3,
+.msg-body .md-h4,
+.msg-body .md-h5,
+.msg-body .md-h6 { font-size: 13px; color: var(--fg-2); }
+.msg-body .md-table {
+  border-collapse: collapse;
+  margin: 6px 0 10px;
+  width: 100%;
+  font-size: 12.5px;
+}
+.msg-body .md-table th,
+.msg-body .md-table td {
+  border: 1px solid var(--border-1);
+  padding: 4px 8px;
+  vertical-align: top;
+  text-align: left;
+}
+.msg-body .md-table th {
+  background: var(--bg-2);
+  color: var(--fg-2);
+  font-weight: 600;
+}
+.msg-body .md-quote {
+  margin: 6px 0 10px;
+  padding: 4px 10px;
+  border-left: 2px solid var(--border-strong);
+  color: var(--fg-2);
+}
+.msg-body .md-code {
+  background: var(--bg-0);
+  border: 1px solid var(--border-1);
+  border-radius: var(--r);
+  padding: 8px 10px;
+  margin: 6px 0 10px;
+  overflow-x: auto;
+  font-family: var(--font-mono);
+  font-size: 12px;
+  line-height: 1.5;
+  white-space: pre;
+}
+.msg-body .md-code code {
+  background: none;
+  border: none;
+  padding: 0;
+  color: var(--fg-1);
+  font-size: 12px;
+}
 .msg-body code {
   font-family: var(--font-mono);
   font-size: 12px;

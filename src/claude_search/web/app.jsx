@@ -46,6 +46,155 @@ const renderInline = (text, terms, keyPrefix = '') => {
 
 const Snippet = ({ text, terms }) => <>{renderInline(text, terms)}</>;
 
+/* ── Render a full message body ──
+   Block-aware pass for the drawer: headers, tables, lists, blockquotes,
+   fenced code blocks, paragraphs (with single-newline → <br/>). Inline
+   formatting inside each block goes through renderInline so code,
+   bold, links, and search-term highlights still work. */
+const renderBlocks = (text, terms) => {
+  const lines = (text || '').split(/\r?\n/);
+  const out = [];
+  let key = 0;
+  let i = 0;
+  const isHeader = (s) => /^#{1,6}\s+\S/.test(s);
+  const isTableRow = (s) => /^\s*\|.*\|\s*$/.test(s);
+  const isTableSep = (s) => /^\s*\|?\s*:?-{2,}:?\s*(\|\s*:?-{2,}:?\s*)+\|?\s*$/.test(s);
+  const isUList = (s) => /^\s*[-*]\s+/.test(s);
+  const isOList = (s) => /^\s*\d+\.\s+/.test(s);
+  const isQuote = (s) => /^>\s?/.test(s);
+  const isFence = (s) => /^```/.test(s);
+  const splitRow = (s) => s.trim().replace(/^\||\|$/g, '').split('|').map((c) => c.trim());
+
+  while (i < lines.length) {
+    const line = lines[i];
+
+    if (isFence(line)) {
+      const buf = [];
+      i++;
+      while (i < lines.length && !isFence(lines[i])) {
+        buf.push(lines[i]);
+        i++;
+      }
+      if (i < lines.length) i++; // consume closing fence
+      out.push(
+        <pre key={`b${key++}`} className="md-code"><code>{buf.join('\n')}</code></pre>
+      );
+      continue;
+    }
+
+    if (isHeader(line)) {
+      const m = /^(#{1,6})\s+(.*)$/.exec(line);
+      const level = m[1].length;
+      const Tag = `h${Math.min(6, level + 2)}`; // map # → h3 so drawer header still wins visually
+      out.push(
+        <Tag key={`b${key++}`} className={`md-h md-h${level}`}>{renderInline(m[2], terms, `b${key}`)}</Tag>
+      );
+      i++;
+      continue;
+    }
+
+    if (isTableRow(line) && i + 1 < lines.length && isTableSep(lines[i + 1])) {
+      const headers = splitRow(line);
+      i += 2;
+      const rows = [];
+      while (i < lines.length && isTableRow(lines[i])) {
+        rows.push(splitRow(lines[i]));
+        i++;
+      }
+      out.push(
+        <table key={`b${key++}`} className="md-table">
+          <thead>
+            <tr>{headers.map((h, j) => <th key={j}>{renderInline(h, terms, `th${j}`)}</th>)}</tr>
+          </thead>
+          <tbody>
+            {rows.map((r, ri) => (
+              <tr key={ri}>{r.map((c, ci) => <td key={ci}>{renderInline(c, terms, `td${ri}${ci}`)}</td>)}</tr>
+            ))}
+          </tbody>
+        </table>
+      );
+      continue;
+    }
+
+    if (isUList(line)) {
+      const items = [];
+      while (i < lines.length && isUList(lines[i])) {
+        items.push(lines[i].replace(/^\s*[-*]\s+/, ''));
+        i++;
+      }
+      out.push(
+        <ul key={`b${key++}`} className="md-list">
+          {items.map((it, j) => <li key={j}>{renderInline(it, terms, `li${j}`)}</li>)}
+        </ul>
+      );
+      continue;
+    }
+
+    if (isOList(line)) {
+      const items = [];
+      while (i < lines.length && isOList(lines[i])) {
+        items.push(lines[i].replace(/^\s*\d+\.\s+/, ''));
+        i++;
+      }
+      out.push(
+        <ol key={`b${key++}`} className="md-list">
+          {items.map((it, j) => <li key={j}>{renderInline(it, terms, `li${j}`)}</li>)}
+        </ol>
+      );
+      continue;
+    }
+
+    if (isQuote(line)) {
+      const buf = [];
+      while (i < lines.length && isQuote(lines[i])) {
+        buf.push(lines[i].replace(/^>\s?/, ''));
+        i++;
+      }
+      out.push(
+        <blockquote key={`b${key++}`} className="md-quote">
+          {buf.map((l, j) => (
+            <React.Fragment key={j}>
+              {j > 0 && <br />}
+              {renderInline(l, terms, `q${j}`)}
+            </React.Fragment>
+          ))}
+        </blockquote>
+      );
+      continue;
+    }
+
+    if (line.trim() === '') {
+      i++;
+      continue;
+    }
+
+    // Paragraph — gather until a blank line or another block-level pattern.
+    const buf = [line];
+    i++;
+    while (i < lines.length && lines[i].trim() !== ''
+      && !isFence(lines[i]) && !isHeader(lines[i])
+      && !(isTableRow(lines[i]) && i + 1 < lines.length && isTableSep(lines[i + 1]))
+      && !isUList(lines[i]) && !isOList(lines[i]) && !isQuote(lines[i])) {
+      buf.push(lines[i]);
+      i++;
+    }
+    out.push(
+      <p key={`b${key++}`} className="md-p">
+        {buf.map((l, j) => (
+          <React.Fragment key={j}>
+            {j > 0 && <br />}
+            {renderInline(l, terms, `p${j}`)}
+          </React.Fragment>
+        ))}
+      </p>
+    );
+  }
+
+  return out;
+};
+
+const MessageBody = ({ text, terms }) => <>{renderBlocks(text, terms)}</>;
+
 const RoleBadge = ({ role }) => (
   <span className={`role-badge ${role === 'user' ? 'user' : role === 'asst' ? 'asst' : 'tool'}`}>
     {role === 'user' ? 'USER' : role === 'asst' ? 'ASST' : 'TOOL'}
@@ -258,4 +407,4 @@ const Footer = ({ extra }) => (
   </div>
 );
 
-window.SearchApp = { SearchBar, ResultsList, NoResults, Footer, RoleBadge, Snippet, Kbd, ResultRow };
+window.SearchApp = { SearchBar, ResultsList, NoResults, Footer, RoleBadge, Snippet, MessageBody, Kbd, ResultRow };
