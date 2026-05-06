@@ -125,6 +125,53 @@ def test_ingest_resume_from_partial_last_line(tmp_path: Path):
         assert idx.message_count() == 3
 
 
+def test_find_session_files_skips_claude_mem_dirs(tmp_path: Path):
+    """Default exclude pattern hides claude-mem observer sessions."""
+    from claude_search.ingest import find_session_files
+
+    proj = tmp_path / "-home-u-projA"
+    proj.mkdir()
+    (proj / "sess1.jsonl").write_text("{}\n", encoding="utf-8")
+
+    obs = tmp_path / "-home-u-.claude-mem-observer-sessions"
+    obs.mkdir()
+    (obs / "sess2.jsonl").write_text("{}\n", encoding="utf-8")
+
+    files = list(find_session_files(tmp_path))
+    names = sorted(p.name for p in files)
+    assert names == ["sess1.jsonl"]
+    # Opt back in via explicit empty patterns.
+    files_all = list(find_session_files(tmp_path, exclude_dir_patterns=()))
+    assert sorted(p.name for p in files_all) == ["sess1.jsonl", "sess2.jsonl"]
+
+
+def test_find_session_files_respects_env_var(tmp_path: Path, monkeypatch):
+    from claude_search.ingest import find_session_files
+
+    a = tmp_path / "-home-u-keep"
+    b = tmp_path / "-home-u-drop-me"
+    a.mkdir(); b.mkdir()
+    (a / "k.jsonl").write_text("{}\n", encoding="utf-8")
+    (b / "d.jsonl").write_text("{}\n", encoding="utf-8")
+
+    monkeypatch.setenv("CLAUDE_SEARCH_EXCLUDE_DIRS", "drop-me")
+    files = list(find_session_files(tmp_path))
+    assert [p.name for p in files] == ["k.jsonl"]
+
+
+def test_is_path_excluded(tmp_path: Path):
+    from claude_search.ingest import is_path_excluded
+
+    keep = tmp_path / "-home-u-projA" / "sess.jsonl"
+    drop = tmp_path / "-home-u-.claude-mem-observer" / "sess.jsonl"
+    keep.parent.mkdir(parents=True)
+    drop.parent.mkdir(parents=True)
+    keep.touch(); drop.touch()
+
+    assert is_path_excluded(drop, tmp_path) is True
+    assert is_path_excluded(keep, tmp_path) is False
+
+
 def test_ingest_all_walks_directory(tmp_path: Path):
     # Build a fake projects dir layout matching ~/.claude/projects.
     proj_a = tmp_path / "-home-u-projA"

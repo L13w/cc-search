@@ -43,6 +43,12 @@ class _Handler(FileSystemEventHandler):
         p = Path(path if isinstance(path, str) else path.decode("utf-8", "replace"))
         if p.suffix != ".jsonl":
             return
+        # Honor the same exclude rules as the bulk find_session_files
+        # walk so live writes to excluded project dirs don't sneak
+        # through the watcher path.
+        from .ingest import is_path_excluded
+        if is_path_excluded(p, self.watcher.projects_dir):
+            return
         self.watcher._mark_pending(p)
 
     def on_modified(self, event: FileSystemEvent) -> None:
